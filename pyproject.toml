@@ -1,0 +1,16 @@
+[project]
+name = "droid-pin"
+version = "0.1.0"
+description = "Audio/Video transcription using Groq Whisper API"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "streamlit>=1.40.0",
+    "groq>=0.12.0",
+    "pydub>=0.25.1",
+    "moviepy>=1.0.3",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+droid-pin = "main:main"
