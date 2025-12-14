@@ -1,5 +1,6 @@
 """Transcription orchestration."""
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -7,6 +8,10 @@ from typing import Callable
 from ..audio.chunker import AudioChunk, AudioChunker
 from ..audio.extractor import AudioExtractor
 from .client import GroqWhisperClient, TranscriptionResult
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -41,9 +46,11 @@ class TranscriptionProcessor:
         self.chunker = AudioChunker()
         self.client = GroqWhisperClient(api_key)
         self.progress_callback = progress_callback
+        logger.info("TranscriptionProcessor initialized")
 
     def _report_progress(self, current: int, total: int, message: str) -> None:
         """Report progress if callback is set."""
+        logger.info(f"[{current}/{total}] {message}")
         if self.progress_callback:
             self.progress_callback(current, total, message)
 
@@ -52,19 +59,7 @@ class TranscriptionProcessor:
         results: list[TranscriptionResult],
         chunks: list[AudioChunk],
     ) -> str:
-        """
-        Combine chunk transcriptions.
-
-        Simple approach: concatenate with space separation.
-        Could be enhanced with overlap detection/deduplication.
-
-        Args:
-            results: List of transcription results.
-            chunks: List of audio chunks.
-
-        Returns:
-            Combined transcription text.
-        """
+        """Combine chunk transcriptions."""
         texts = [r.text.strip() for r in results if r.text]
         return " ".join(texts)
 
@@ -85,6 +80,7 @@ class TranscriptionProcessor:
         Returns:
             ProcessingResult with combined transcription.
         """
+        logger.info(f"Starting processing: {file_path.name}")
         audio_path = file_path
         was_video = False
         temp_audio_path: Path | None = None
@@ -100,30 +96,37 @@ class TranscriptionProcessor:
                 self._report_progress(10, 100, "Audio extracted")
 
             # Step 2: Chunk audio if needed
-            self._report_progress(15, 100, "Analyzing audio file...")
-            chunks = self.chunker.chunk_audio(audio_path)
+            self._report_progress(15, 100, "Loading and analyzing audio file...")
+
+            # Pass a callback to show chunking progress in UI
+            def chunk_progress(msg: str) -> None:
+                self._report_progress(15, 100, msg)
+
+            chunks = self.chunker.chunk_audio(audio_path, progress_callback=chunk_progress)
             chunk_count = len(chunks)
-            self._report_progress(20, 100, f"Split into {chunk_count} chunk(s)")
+            self._report_progress(20, 100, f"Ready to transcribe {chunk_count} chunk(s)")
 
             # Step 3: Transcribe each chunk
             results: list[TranscriptionResult] = []
             for i, chunk in enumerate(chunks):
-                progress = 20 + int((i / chunk_count) * 70)
+                progress = 20 + int(((i + 1) / chunk_count) * 70)
                 self._report_progress(
                     progress,
                     100,
                     f"Transcribing chunk {i + 1}/{chunk_count}...",
                 )
 
+                logger.info(f"Sending chunk {i + 1} to Groq API: {chunk.path.name}")
                 result = self.client.transcribe(
                     audio_path=chunk.path,
                     language=language,
                     prompt=prompt,
                 )
+                logger.info(f"Chunk {i + 1} transcribed: {len(result.text)} chars")
                 results.append(result)
 
             # Step 4: Combine results
-            self._report_progress(90, 100, "Combining transcriptions...")
+            self._report_progress(95, 100, "Combining transcriptions...")
             combined_text = self._combine_transcriptions(results, chunks)
 
             # Aggregate metadata
@@ -135,6 +138,7 @@ class TranscriptionProcessor:
                     all_segments.extend(result.segments)
 
             self._report_progress(100, 100, "Transcription complete!")
+            logger.info(f"Processing complete: {len(combined_text)} chars total")
 
             return ProcessingResult(
                 text=combined_text,
@@ -146,8 +150,13 @@ class TranscriptionProcessor:
                 was_video=was_video,
             )
 
+        except Exception as e:
+            logger.error(f"Processing failed: {e}", exc_info=True)
+            raise
+
         finally:
             # Cleanup temporary files
+            logger.info("Cleaning up temporary files...")
             self.chunker.cleanup_chunks(chunks)
             if temp_audio_path:
                 self.extractor.cleanup(temp_audio_path)
